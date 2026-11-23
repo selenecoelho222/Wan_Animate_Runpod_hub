@@ -176,25 +176,27 @@ def handler(job):
 
     logger.info(f"Received job input: {job_input}")
     task_id = f"task_{uuid.uuid4()}"
+    # Newer ComfyUI only accepts inputs inside its input folder, so save there and pass a relative name
+    input_dir = os.path.join("/ComfyUI/input", task_id)
 
 
     image_path = None
     # 이미지 입력 처리 (image_path, image_url, image_base64 중 하나만 사용)
     if "image_path" in job_input:
-        image_path = process_input(job_input["image_path"], task_id, "input_image.jpg", "path")
+        image_path = process_input(job_input["image_path"], input_dir, "input_image.jpg", "path")
     elif "image_url" in job_input:
-        image_path = process_input(job_input["image_url"], task_id, "input_image.jpg", "url")
+        image_path = process_input(job_input["image_url"], input_dir, "input_image.jpg", "url")
     elif "image_base64" in job_input:
-        image_path = process_input(job_input["image_base64"], task_id, "input_image.jpg", "base64")
+        image_path = process_input(job_input["image_base64"], input_dir, "input_image.jpg", "base64")
 
     video_path = None
     # 비디오 입력 처리 (video_path, video_url, video_base64 중 하나만 사용)
     if "video_path" in job_input:
-        video_path = process_input(job_input["video_path"], task_id, "input_video.mp4", "path")
+        video_path = process_input(job_input["video_path"], input_dir, "input_video.mp4", "path")
     elif "video_url" in job_input:
-        video_path = process_input(job_input["video_url"], task_id, "input_video.mp4", "url")
+        video_path = process_input(job_input["video_url"], input_dir, "input_video.mp4", "url")
     elif "video_base64" in job_input:
-        video_path = process_input(job_input["video_base64"], task_id, "input_video.mp4", "base64")
+        video_path = process_input(job_input["video_base64"], input_dir, "input_video.mp4", "base64")
 
     check_coord = job_input.get("points_store", None)
 
@@ -203,6 +205,11 @@ def handler(job):
         raise Exception("Image input is required. Provide image_path, image_url, or image_base64")
     if video_path is None:
         raise Exception("Video input is required. Provide video_path, video_url, or video_base64")
+
+    if image_path.startswith("/ComfyUI/input/"):
+        image_path = os.path.relpath(image_path, "/ComfyUI/input")
+    if video_path.startswith("/ComfyUI/input/"):
+        video_path = os.path.relpath(video_path, "/ComfyUI/input")
 
     # Initialize prompt variable to avoid UnboundLocalError
     prompt = None

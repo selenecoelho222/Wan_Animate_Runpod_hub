@@ -55,7 +55,12 @@ def queue_prompt(prompt):
     p = {"prompt": prompt, "client_id": client_id}
     data = json.dumps(p).encode('utf-8')
     req = urllib.request.Request(url, data=data)
-    return json.loads(urllib.request.urlopen(req).read())
+    try:
+        return json.loads(urllib.request.urlopen(req).read())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode('utf-8', 'replace')[:3000]
+        logger.error('ComfyUI rejected prompt: ' + body)
+        raise Exception('ComfyUI rejected prompt: ' + body)
 
 def get_image(filename, subfolder, folder_type):
     url = f"http://{server_address}:8188/view"

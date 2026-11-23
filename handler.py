@@ -257,6 +257,13 @@ def handler(job):
         # prompt["107"]["inputs"]["width"] = job_input["width"]
         # prompt["107"]["inputs"]["height"] = job_input["height"]
     
+    # Optional per-job tweaks: {"overrides": {"<node id>": {"<input name>": value}}}
+    overrides = job_input.get("overrides") or {}
+    for node_id, vals in overrides.items():
+        if node_id in prompt and isinstance(vals, dict):
+            prompt[node_id]["inputs"].update(vals)
+            logger.info(f"Override node {node_id}: {vals}")
+
     # Validate prompt was assigned
     if prompt is None:
         raise RuntimeError("Failed to load workflow. Prompt was not initialized.")

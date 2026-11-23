@@ -8,6 +8,7 @@ WORKDIR /
 
 RUN git clone https://github.com/comfyanonymous/ComfyUI.git && \
     cd /ComfyUI && \
+    git checkout $(git rev-list -n 1 --before="2026-01-29 12:00" HEAD) && \
     pip install -r requirements.txt
 
 RUN cd /ComfyUI/custom_nodes && \
@@ -18,21 +19,25 @@ RUN cd /ComfyUI/custom_nodes && \
 RUN cd /ComfyUI/custom_nodes && \
     git clone https://github.com/kijai/ComfyUI-WanVideoWrapper && \
     cd ComfyUI-WanVideoWrapper && \
+    git checkout $(git rev-list -n 1 --before="2026-01-29 12:00" HEAD) && \
     pip install -r requirements.txt
 
 RUN cd /ComfyUI/custom_nodes && \
     git clone https://github.com/kijai/ComfyUI-KJNodes && \
     cd ComfyUI-KJNodes && \
+    git checkout $(git rev-list -n 1 --before="2026-01-29 12:00" HEAD) && \
     pip install -r requirements.txt
 
 RUN cd /ComfyUI/custom_nodes && \
     git clone https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite && \
     cd ComfyUI-VideoHelperSuite && \
+    git checkout $(git rev-list -n 1 --before="2026-01-29 12:00" HEAD) && \
     pip install -r requirements.txt
 
 RUN cd /ComfyUI/custom_nodes && \
     git clone https://github.com/kijai/ComfyUI-WanAnimatePreprocess && \
     cd ComfyUI-WanAnimatePreprocess && \
+    git checkout $(git rev-list -n 1 --before="2026-01-29 12:00" HEAD) && \
     pip install -r requirements.txt
     
 RUN cd /ComfyUI/custom_nodes && \

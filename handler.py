@@ -454,3 +454,5 @@ def main_handler(job):
 
 
 runpod.serverless.start({"handler": main_handler})
+
+# rebuild trigger

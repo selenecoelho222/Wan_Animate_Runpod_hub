@@ -314,4 +314,143 @@ def handler(job):
     
     return {"error": "비디오를를 찾을 수 없습니다."}
 
-runpod.serverless.start({"handler": handler})
+import shutil
+import re
+import math
+
+
+def ffbin():
+    p = shutil.which('ffmpeg')
+    if p:
+        return p
+    import imageio_ffmpeg
+    return imageio_ffmpeg.get_ffmpeg_exe()
+
+
+def probe_file(path):
+    r = subprocess.run([ffbin(), '-hide_banner', '-i', path], capture_output=True, text=True)
+    s = r.stderr
+    dur = 0.0
+    m = re.search(r'Duration: (\d+):(\d+):(\d+\.?\d*)', s)
+    if m:
+        dur = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+    w = 0
+    h = 0
+    m = re.search(r', (\d{2,5})x(\d{2,5})[ ,\[]', s)
+    if m:
+        w = int(m.group(1))
+        h = int(m.group(2))
+    fps = 0.0
+    m = re.search(r'(\d+(?:\.\d+)?) fps', s)
+    if m:
+        fps = float(m.group(1))
+    return {"duration": dur, "width": w, "height": h, "fps": fps, "has_audio": ('Audio:' in s)}
+
+
+def do_prepare(ji):
+    """Checks a video and cuts it into segments: info, scene cuts, preview frames, segments, audio."""
+    wd = '/tmp/prep_' + uuid.uuid4().hex
+    os.makedirs(wd, exist_ok=True)
+    vp = os.path.join(wd, 'in.mp4')
+    with open(vp, 'wb') as f:
+        f.write(base64.b64decode(ji['video_base64']))
+    info = probe_file(vp)
+    dur = info['duration']
+    # scene cuts (hard cuts only)
+    r = subprocess.run([ffbin(), '-hide_banner', '-i', vp, '-an', '-vf', "select='gt(scene,0.5)',showinfo", '-f', 'null', '-'],
+                       capture_output=True, text=True, timeout=300)
+    cut_times = [float(x) for x in re.findall(r'pts_time:(\d+\.?\d*)', r.stderr) if float(x) > 0.2]
+    info['cuts'] = len(cut_times)
+    info['cut_times'] = cut_times
+    # preview frames
+    frames = []
+    for i, frac in enumerate(ji.get('frame_fractions', [0.1, 0.3, 0.5, 0.7, 0.9])):
+        fp = os.path.join(wd, 'f%d.jpg' % i)
+        subprocess.run([ffbin(), '-hide_banner', '-y', '-ss', '%.3f' % (dur * frac), '-i', vp, '-frames:v', '1', '-q:v', '2', fp],
+                       capture_output=True, timeout=120)
+        if os.path.exists(fp):
+            with open(fp, 'rb') as f:
+                frames.append(base64.b64encode(f.read()).decode('utf-8'))
+    # segments
+    seg_len = float(ji.get('segment_seconds', 5.0))
+    n = max(1, int(round(dur / seg_len))) if dur > 0 else 1
+    each = dur / n
+    sw = int(ji.get('width', 704))
+    sh = int(ji.get('height', 1248))
+    segments = []
+    for i in range(n):
+        sp = os.path.join(wd, 's%d.mp4' % i)
+        subprocess.run([ffbin(), '-hide_banner', '-y', '-ss', '%.3f' % (i * each), '-t', '%.3f' % each, '-i', vp, '-an',
+                        '-vf', 'scale=%d:%d:flags=lanczos' % (sw, sh), '-c:v', 'libx264', '-crf', '20', '-pix_fmt', 'yuv420p', sp],
+                       capture_output=True, timeout=300)
+        with open(sp, 'rb') as f:
+            segments.append({"video": base64.b64encode(f.read()).decode('utf-8'), "duration": round(each, 3)})
+    audio = None
+    if info['has_audio']:
+        ap = os.path.join(wd, 'a.m4a')
+        subprocess.run([ffbin(), '-hide_banner', '-y', '-i', vp, '-vn', '-c:a', 'aac', '-b:a', '128k', ap], capture_output=True, timeout=120)
+        if os.path.exists(ap):
+            with open(ap, 'rb') as f:
+                audio = base64.b64encode(f.read()).decode('utf-8')
+    shutil.rmtree(wd, ignore_errors=True)
+    return {"info": info, "frames": frames, "segments": segments, "audio": audio}
+
+
+def do_finish(ji):
+    """Stretches each result to its target duration, smooths to 30 fps, joins them, adds the original audio."""
+    wd = '/tmp/fin_' + uuid.uuid4().hex
+    os.makedirs(wd, exist_ok=True)
+    ow = int(ji.get('width', 720))
+    oh = int(ji.get('height', 1280))
+    mi = 'minterpolate=fps=30:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:me=umh:mb_size=8:search_param=32:vsbmc=1'
+    parts = []
+    total = 0.0
+    for i, seg in enumerate(ji['segments']):
+        rp = os.path.join(wd, 'r%d.mp4' % i)
+        with open(rp, 'wb') as f:
+            f.write(base64.b64decode(seg['video']))
+        actual = probe_file(rp)['duration'] or float(seg['duration'])
+        target = float(seg['duration'])
+        pp = os.path.join(wd, 'p%d.mp4' % i)
+        vf = 'setpts=PTS*%.6f,scale=%d:%d:flags=lanczos,%s,tpad=stop_mode=clone:stop_duration=0.5,format=yuv420p' % (target / actual, ow, oh, mi)
+        r = subprocess.run([ffbin(), '-hide_banner', '-y', '-i', rp, '-vf', vf, '-t', '%.3f' % target, '-r', '30', '-an',
+                            '-c:v', 'libx264', '-crf', '16', pp], capture_output=True, text=True, timeout=600)
+        if not os.path.exists(pp):
+            raise Exception('ffmpeg failed: ' + r.stderr[-600:])
+        parts.append(pp)
+        total += target
+    lp = os.path.join(wd, 'list.txt')
+    with open(lp, 'w') as f:
+        for p in parts:
+            f.write("file '%s'\n" % p)
+    out = os.path.join(wd, 'out.mp4')
+    cmd = [ffbin(), '-hide_banner', '-y', '-f', 'concat', '-safe', '0', '-i', lp]
+    if ji.get('audio'):
+        ap = os.path.join(wd, 'a.m4a')
+        with open(ap, 'wb') as f:
+            f.write(base64.b64decode(ji['audio']))
+        cmd += ['-i', ap, '-map', '0:v', '-map', '1:a', '-c:v', 'copy', '-c:a', 'aac', '-t', '%.3f' % total]
+    else:
+        cmd += ['-c:v', 'copy']
+    cmd.append(out)
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if not os.path.exists(out):
+        raise Exception('concat failed: ' + r.stderr[-600:])
+    with open(out, 'rb') as f:
+        data = base64.b64encode(f.read()).decode('utf-8')
+    final = probe_file(out)
+    shutil.rmtree(wd, ignore_errors=True)
+    return {"video": data, "duration": final['duration']}
+
+
+def main_handler(job):
+    ji = job.get("input", {})
+    action = ji.get("action")
+    if action == "prepare":
+        return do_prepare(ji)
+    if action == "finish":
+        return do_finish(ji)
+    return handler(job)
+
+
+runpod.serverless.start({"handler": main_handler})
